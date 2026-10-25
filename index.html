@@ -1,1 +1,377 @@
+
 <!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>صانع فيديوهات الإعلانات</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;padding:12px;font-family:Tahoma,Arial,sans-serif;background:#111;color:#fff}
+  h1{font-size:18px;text-align:center;margin:0 0 12px}
+  .box{background:#1c1c1c;border-radius:10px;padding:10px;margin-bottom:10px}
+  label{display:block;margin-top:10px;font-size:14px;color:#ccc}
+  input[type=text],textarea,select{width:100%;padding:10px;border-radius:6px;border:1px solid #444;background:#222;color:#fff;font-size:16px;font-family:inherit}
+  input[type=file]{width:100%;color:#ccc}
+  textarea{resize:vertical}
+  canvas{width:100%;max-height:75vh;object-fit:contain;background:#000;border-radius:8px;display:block}
+  .row{display:flex;gap:8px;margin-top:12px}
+  button{flex:1;padding:13px;border:0;border-radius:8px;background:#2d7ff9;color:#fff;font-size:15px}
+  button.alt{background:#1fa35b}
+  #status{font-size:13px;color:#9f9;min-height:18px;margin-top:8px}
+</style>
+</head>
+<body>
+<h1>📣 صانع فيديوهات الإعلانات</h1>
+
+<div class="box">
+  <label>اسم النشاط</label>
+  <input type="text" id="name" value="مطعم الأصيل">
+
+  <label>العنوان الرئيسي (البانر)</label>
+  <input type="text" id="headline" value="أشهى المأكولات بين إيديك">
+
+  <label>العرض</label>
+  <textarea id="offer" rows="2">خصم 30% على كل الوجبات لمدة أسبوع</textarea>
+
+  <label>المميزات (كل ميزة في سطر)</label>
+  <textarea id="features" rows="4">مكونات طازجة كل يوم
+توصيل سريع لحد باب البيت
+أسعار مناسبة للجميع</textarea>
+
+  <label>رقم التليفون</label>
+  <input type="text" id="phone" value="01000000000">
+
+  <label>العنوان</label>
+  <input type="text" id="address" value="القاهرة - شارع التحرير">
+
+  <label>اللوجو (اختياري)</label>
+  <input type="file" id="logo" accept="image/*">
+
+  <label>صورة المنتج (اختياري)</label>
+  <input type="file" id="photo" accept="image/*">
+
+  <label>شكل الفيديو</label>
+  <select id="ratio">
+    <option value="9:16">طولي 9:16 (ريلز / تيك توك / ستوري)</option>
+    <option value="4:5">4:5 (فيسبوك / انستجرام)</option>
+    <option value="1:1">مربع 1:1</option>
+    <option value="16:9">عرضي 16:9 (يوتيوب)</option>
+  </select>
+
+  <label>الألوان</label>
+  <select id="theme">
+    <option value="red">أحمر وذهبي</option>
+    <option value="blue">أزرق</option>
+    <option value="green">أخضر</option>
+    <option value="gold">أسود وذهبي</option>
+    <option value="purple">بنفسجي</option>
+  </select>
+
+  <label>سرعة القراءة</label>
+  <select id="speed">
+    <option value="0.55">بطيئة (الأوضح)</option>
+    <option value="0.4" selected>متوسطة</option>
+    <option value="0.3">سريعة</option>
+  </select>
+
+  <div class="row">
+    <button id="previewBtn">▶ معاينة</button>
+    <button id="exportBtn" class="alt">⬇ تصدير</button>
+  </div>
+  <div id="status">املأ البيانات واضغط معاينة</div>
+</div>
+
+<div class="box"><canvas id="c"></canvas></div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const canvas = $('c'), ctx = canvas.getContext('2d');
+  const setStatus = m => $('status').textContent = m;
+  const FONT = 'Tahoma, Arial, sans-serif';
+
+  const THEMES = {
+    red:    ['#8e0e12', '#e52d27', '#ffd200'],
+    blue:   ['#0f2027', '#2c5364', '#00d2ff'],
+    green:  ['#064d1b', '#1f9d55', '#fff200'],
+    gold:   ['#111111', '#2b2b2b', '#ffc107'],
+    purple: ['#2f0743', '#6a3093', '#ff6ec4']
+  };
+  const SIZES = { '9:16':[540,960], '4:5':[600,750], '1:1':[720,720], '16:9':[960,540] };
+
+  let logoImg = null, photoImg = null;
+  let scenes = [], total = 0, running = false, raf = 0, recorder = null, chunks = [];
+
+  function loadImg(inputId, cb) {
+    $(inputId).addEventListener('change', e => {
+      const f = e.target.files[0];
+      if (!f) { cb(null); return; }
+      const im = new Image();
+      im.onload = () => cb(im);
+      im.src = URL.createObjectURL(f);
+    });
+  }
+  loadImg('logo',  im => logoImg = im);
+  loadImg('photo', im => photoImg = im);
+
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+  function rr(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  // تقسيم النص لأسطر حسب العرض
+  function wrap(text, maxW) {
+    const out = [];
+    text.split('\n').forEach(par => {
+      const words = par.trim().split(/\s+/).filter(Boolean);
+      let line = '';
+      words.forEach(w => {
+        const test = line ? line + ' ' + w : w;
+        if (ctx.measureText(test).width > maxW && line) { out.push(line); line = w; }
+        else line = test;
+      });
+      if (line) out.push(line);
+    });
+    return out;
+  }
+
+  // تصغير الخط تلقائياً لحد ما النص كله يدخل في المساحة
+  function fit(text, w, h, maxFs) {
+    let fs = Math.max(12, Math.round(maxFs)), lines = [];
+    for (; fs >= 12; fs -= 2) {
+      ctx.font = 'bold ' + fs + 'px ' + FONT;
+      lines = wrap(text, w);
+      if (lines.length * fs * 1.35 <= h) break;
+    }
+    return { fs, lines };
+  }
+
+  function buildScenes() {
+    const W = canvas.width, H = canvas.height;
+    const [, , ac] = THEMES[$('theme').value];
+    const name = $('name').value.trim();
+    const headline = $('headline').value.trim();
+    const offer = $('offer').value.trim();
+    const feats = $('features').value.split('\n').map(s => s.trim()).filter(Boolean);
+    const phone = $('phone').value.trim();
+    const addr = $('address').value.trim();
+    const S = [];
+    const base = Math.min(W, H);
+
+    if (name || headline) {
+      const b = [];
+      if (name) b.push({ text: name, color: '#fff', maxFs: base * 0.14, weight: 2 });
+      if (headline) b.push({ text: headline, color: ac, maxFs: base * 0.09, weight: 2 });
+      S.push({ blocks: b, photo: true });
+    }
+    if (offer) {
+      S.push({ photo: true, blocks: [
+        { text: '🔥 عرض خاص', color: ac, maxFs: base * 0.09, weight: 1 },
+        { text: offer, color: '#fff', maxFs: base * 0.13, weight: 3 }
+      ]});
+    }
+    if (feats.length) {
+      const b = [{ text: 'ليه تختارنا؟', color: ac, maxFs: base * 0.1, weight: 1 }];
+      feats.forEach(f => b.push({ text: '✓ ' + f, color: '#fff', maxFs: base * 0.09, weight: 1, group: true }));
+      S.push({ blocks: b, photo: false });
+    }
+    if (phone || addr) {
+      const b = [{ text: 'اطلب الآن!', color: ac, maxFs: base * 0.14, weight: 2 }];
+      if (phone) b.push({ text: '📞 ' + phone, color: '#fff', maxFs: base * 0.11, weight: 1.5 });
+      if (addr) b.push({ text: '📍 ' + addr, color: '#fff', maxFs: base * 0.08, weight: 1.5 });
+      S.push({ blocks: b, photo: false });
+    }
+
+    const speed = Number($('speed').value) || 0.4;
+    S.forEach((s, i) => {
+      const words = s.blocks.reduce((a, b) => a + b.text.split(/\s+/).length, 0);
+      s.dur = Math.max(3, 2.2 + words * speed);
+      s.last = i === S.length - 1;
+      layout(s, W, H);
+    });
+    return S;
+  }
+
+  function layout(s, W, H) {
+    const top = logoImg ? H * 0.14 : H * 0.045;
+    const bottom = H * 0.95;
+    let textTop = top;
+    s.photoRect = null;
+    if (s.photo && photoImg) {
+      const ph = (bottom - top) * 0.42;
+      s.photoRect = { x: W * 0.08, y: top, w: W * 0.84, h: ph };
+      textTop = top + ph + H * 0.02;
+    }
+    s.panel = { x: W * 0.05, y: textTop, w: W * 0.9, h: bottom - textTop };
+    const pad = W * 0.04;
+    const R = { x: s.panel.x + pad, y: s.panel.y + pad, w: s.panel.w - pad * 2, h: s.panel.h - pad * 2 };
+
+    const n = s.blocks.length;
+    const gap = R.h * 0.03;
+    const usable = R.h - gap * (n - 1);
+    const tw = s.blocks.reduce((a, b) => a + b.weight, 0);
+    let y = R.y;
+    s.blocks.forEach(b => {
+      b.h = usable * b.weight / tw;
+      b.y = y;
+      y += b.h + gap;
+      const f = fit(b.text, R.w, b.h, b.maxFs);
+      b.fs = f.fs; b.lines = f.lines;
+    });
+    const gs = s.blocks.filter(b => b.group);
+    if (gs.length) {
+      const m = Math.min(...gs.map(b => b.fs));
+      gs.forEach(b => { const f = fit(b.text, R.w, b.h, m); b.fs = f.fs; b.lines = f.lines; });
+    }
+    s.R = R;
+  }
+
+  function drawCover(img, r, zoom) {
+    ctx.save();
+    rr(r.x, r.y, r.w, r.h, 24);
+    ctx.clip();
+    const sc = Math.max(r.w / img.width, r.h / img.height) * zoom;
+    const w = img.width * sc, h = img.height * sc;
+    ctx.drawImage(img, r.x + (r.w - w) / 2, r.y + (r.h - h) / 2, w, h);
+    ctx.restore();
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+    rr(r.x, r.y, r.w, r.h, 24);
+    ctx.stroke();
+  }
+
+  function drawScene(s, idx, local, globalT) {
+    const W = canvas.width, H = canvas.height;
+    const [c1, c2, ac] = THEMES[$('theme').value];
+    ctx.direction = 'rtl';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    // الخلفية
+    const g = ctx.createLinearGradient(0, 0, W, H);
+    g.addColorStop(0, c1); g.addColorStop(1, c2);
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+    for (let k = 0; k < 7; k++) {
+      const x = (Math.sin(globalT * 0.4 + k * 1.9) * 0.5 + 0.5) * W;
+      const y = (Math.cos(globalT * 0.3 + k * 2.4) * 0.5 + 0.5) * H;
+      const r = (0.07 + 0.04 * (k % 3)) * Math.min(W, H);
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.07)'; ctx.fill();
+    }
+    ctx.fillStyle = ac;
+    ctx.fillRect(0, 0, W, H * 0.012);
+
+    // اللوجو
+    if (logoImg) {
+      const bw = W * 0.34, bh = H * 0.09;
+      const sc = Math.min(bw / logoImg.width, bh / logoImg.height);
+      const w = logoImg.width * sc, h = logoImg.height * sc;
+      ctx.drawImage(logoImg, (W - w) / 2, H * 0.03 + (bh - h) / 2, w, h);
+    }
+
+    // صورة المنتج
+    if (s.photoRect && photoImg) {
+      drawCover(photoImg, s.photoRect, 1 + 0.06 * (local / s.dur));
+    }
+
+    // لوح النص
+    ctx.fillStyle = 'rgba(0,0,0,0.30)';
+    rr(s.panel.x, s.panel.y, s.panel.w, s.panel.h, 28);
+    ctx.fill();
+
+    // النصوص
+    const fadeOut = s.last ? 1 : clamp((s.dur - local) / 0.35, 0, 1);
+    s.blocks.forEach((b, k) => {
+      const a = clamp((local - k * 0.45) / 0.4, 0, 1) * fadeOut;
+      if (a <= 0) return;
+      ctx.globalAlpha = a;
+      ctx.font = 'bold ' + b.fs + 'px ' + FONT;
+      const lh = b.fs * 1.35;
+      const start = b.y + (b.h - b.lines.length * lh) / 2 + lh / 2 + (1 - a) * 20;
+      b.lines.forEach((ln, i) => {
+        const x = s.R.x + s.R.w / 2, y = start + i * lh;
+        ctx.lineWidth = b.fs / 9;
+        ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+        ctx.strokeText(ln, x, y);
+        ctx.fillStyle = b.color;
+        ctx.fillText(ln, x, y);
+      });
+    });
+    ctx.globalAlpha = 1;
+
+    // شريط التقدم
+    ctx.fillStyle = ac;
+    ctx.fillRect(0, H - 8, W * (globalT / total), 8);
+  }
+
+  function stopAll() { running = false; cancelAnimationFrame(raf); }
+
+  function play(record) {
+    stopAll();
+    const [w, h] = SIZES[$('ratio').value];
+    canvas.width = w; canvas.height = h;
+    scenes = buildScenes();
+    if (!scenes.length) { setStatus('املأ بيانات الإعلان أولاً'); return; }
+    total = scenes.reduce((a, s) => a + s.dur, 0);
+
+    if (record) {
+      if (!canvas.captureStream || typeof MediaRecorder === 'undefined') {
+        setStatus('المتصفح لا يدعم التصدير. استخدم Chrome'); return;
+      }
+      const mime = ['video/mp4', 'video/webm;codecs=vp9', 'video/webm']
+        .find(t => MediaRecorder.isTypeSupported(t)) || '';
+      chunks = [];
+      try { recorder = new MediaRecorder(canvas.captureStream(30), mime ? { mimeType: mime } : undefined); }
+      catch (e) { setStatus('فشل بدء التصدير'); return; }
+      recorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+      recorder.onstop = () => {
+        const type = recorder.mimeType || mime || 'video/webm';
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob(chunks, { type }));
+        a.download = 'ad-video.' + (type.includes('mp4') ? 'mp4' : 'webm');
+        document.body.appendChild(a); a.click(); a.remove();
+        setStatus('تم التصدير ✓');
+      };
+      recorder.start();
+      setStatus('جاري التصدير (' + Math.round(total) + ' ثانية)... لا تغلق الصفحة');
+    } else {
+      setStatus('جاري المعاينة... المدة ' + Math.round(total) + ' ثانية');
+    }
+
+    const t0 = performance.now();
+    running = true;
+    const tick = now => {
+      if (!running) return;
+      const t = (now - t0) / 1000;
+      if (t >= total + 0.6) {
+        running = false;
+        if (record && recorder.state !== 'inactive') recorder.stop();
+        else setStatus('انتهت المعاينة');
+        return;
+      }
+      const tt = Math.min(t, total - 0.001);
+      let acc = 0, i = 0;
+      while (i < scenes.length - 1 && tt >= acc + scenes[i].dur) { acc += scenes[i].dur; i++; }
+      drawScene(scenes[i], i, tt - acc, tt);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+  }
+
+  $('previewBtn').addEventListener('click', () => play(false));
+  $('exportBtn').addEventListener('click', () => play(true));
+  canvas.width = 540; canvas.height = 960;
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+})();
+</script>
+</body>
+</html>
